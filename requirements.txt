@@ -1,0 +1,4 @@
+# Optional. The app runs with zero third-party dependencies (stdlib only) and falls back to a
+# local SQLite graph store + rule-based extraction + templated answers if these aren't installed
+# or configured. Install this only to enable the Neo4j graph backend.
+neo4j>=5.19,<6

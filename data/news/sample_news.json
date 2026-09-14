@@ -1,0 +1,23 @@
+[
+  {
+    "title": "Chip supply concerns rise after earthquake disrupts Taiwan production",
+    "description": "A natural disaster in Taiwan has raised semiconductor shortage concerns for companies that rely on TSMC and advanced chip manufacturing.",
+    "content": "The disruption could affect companies including Apple and NVIDIA through chip supply and advanced packaging delays.",
+    "url": "https://example.com/taiwan-chip-earthquake",
+    "published_at": "2026-09-04T09:00:00Z"
+  },
+  {
+    "title": "New export controls target advanced AI accelerators",
+    "description": "Regulators announced export restrictions covering advanced artificial intelligence accelerators and semiconductor equipment.",
+    "content": "NVIDIA may face demand and shipment risk if export controls limit sales to China.",
+    "url": "https://example.com/ai-export-controls",
+    "published_at": "2026-09-04T10:30:00Z"
+  },
+  {
+    "title": "Lithium price volatility pressures battery supply chains",
+    "description": "Battery makers and electric vehicle companies face commodity price volatility as lithium markets tighten.",
+    "content": "Tesla, Panasonic, and CATL are exposed to battery material costs and potential lithium shortages.",
+    "url": "https://example.com/lithium-battery-risk",
+    "published_at": "2026-09-04T11:15:00Z"
+  }
+]

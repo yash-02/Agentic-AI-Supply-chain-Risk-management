@@ -1,0 +1,8 @@
+Tesla, Inc. designs, develops, manufactures, and sells electric vehicles and energy storage products.
+Tesla reports automotive revenue, gross profit, operating income, net income, and operating margin to describe profitability.
+In this sample filing context, Tesla's profitability is affected by vehicle pricing, battery costs, manufacturing scale, lithium prices, and logistics costs.
+Tesla depends on suppliers for battery cells, lithium, rare earth materials, semiconductors, and vehicle components.
+The company sources battery cells from suppliers including Panasonic and CATL.
+Raw material price volatility, lithium shortages, supplier concentration, and logistics delays could affect vehicle production.
+Manufacturing operations and supplier networks span the United States, China, Germany, Japan, and Mexico.
+Tariffs, port congestion, labor disruption, or natural disasters may increase costs or interrupt supply.
