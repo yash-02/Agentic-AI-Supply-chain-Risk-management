@@ -58,15 +58,20 @@ https://ollama.com/download
 Pull a small local model, plus an embedding model for vector search:
 
 ```powershell
-ollama pull llama3.2:3b
+ollama pull phi3.5
 ollama pull nomic-embed-text
 ```
+
+`phi3.5` (3.8B) is the default and recommended model - in testing it followed the answer-format
+instructions (concise bullets, no repeated/redrafted answers) noticeably more reliably than
+`llama3.2:3b` at a similar size and speed. `llama3.2:3b` still works if you already have it pulled;
+just set `OLLAMA_MODEL` to it.
 
 Run the app with Ollama:
 
 ```powershell
 $env:LLM_PROVIDER="ollama"
-$env:OLLAMA_MODEL="llama3.2:3b"
+$env:OLLAMA_MODEL="phi3.5"
 $env:OLLAMA_EMBED_MODEL="nomic-embed-text"
 python app.py --serve
 ```

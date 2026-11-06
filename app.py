@@ -27,6 +27,26 @@ STORAGE_DIR = ROOT / "storage"
 DB_PATH = STORAGE_DIR / "supply_chain.db"
 
 
+def _load_dotenv() -> None:
+    """Minimal stdlib-only .env loader (no external dependency): sets os.environ
+    from KEY=VALUE lines in .env, without overriding vars already set in the shell."""
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv()
+
+
 COMPANY_ALIASES = {
     "Apple Inc.": ["apple", "apple inc", "aapl"],
     "NVIDIA Corporation": ["nvidia", "nvidia corporation", "nvda"],
@@ -181,9 +201,66 @@ def keyword_score_chunks(chunks: List[Dict], q_terms: Counter) -> Dict[str, floa
     return scores
 
 
-def vector_score_chunks(chunks: List[Dict], question_embedding: Optional[List[float]]) -> Dict[str, float]:
-    if not question_embedding:
-        return {}
+CHROMA_DIR = STORAGE_DIR / "chroma"
+
+
+class ChromaVectorIndex:
+    """Thin wrapper over a local persistent Chroma collection - a real ANN-capable vector
+    store, replacing the pure-Python linear cosine scan over JSON-decoded embeddings. Kept
+    intentionally dumb: chunk text/metadata stays in the graph store (SQLite/Neo4j) as the
+    source of truth; Chroma only ever holds id + embedding + enough metadata to be useful
+    standalone, and is queried purely for "which chunk ids are nearest," nothing else."""
+
+    def __init__(self):
+        import chromadb  # deferred: only required when this backend is actually used
+
+        CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+        self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        self.collection = self.client.get_or_create_collection(name="chunks", metadata={"hnsw:space": "cosine"})
+
+    def upsert(self, chunk_id: str, embedding: List[float], metadata: Dict) -> None:
+        self.collection.upsert(ids=[chunk_id], embeddings=[embedding], metadatas=[metadata])
+
+    def query(self, embedding: List[float], top_k: int) -> Dict[str, float]:
+        count = self.collection.count()
+        if count == 0:
+            return {}
+        result = self.collection.query(query_embeddings=[embedding], n_results=min(top_k, count))
+        ids = result.get("ids", [[]])[0]
+        distances = result.get("distances", [[]])[0]
+        # cosine space: distance = 1 - cosine_similarity, so similarity = 1 - distance
+        return {chunk_id: max(0.0, 1.0 - dist) for chunk_id, dist in zip(ids, distances)}
+
+    def reset(self) -> None:
+        self.client.delete_collection("chunks")
+        self.collection = self.client.get_or_create_collection(name="chunks", metadata={"hnsw:space": "cosine"})
+
+
+_VECTOR_INDEX = None
+_VECTOR_INDEX_READY = False
+
+
+def get_vector_index() -> Optional[ChromaVectorIndex]:
+    """Lazily create (once per process) and cache the Chroma index, same auto/none pattern
+    as GRAPH_BACKEND: try it if available, silently fall back to the in-row JSON scan if
+    chromadb isn't installed or anything about it fails, and never once fail the request."""
+    global _VECTOR_INDEX, _VECTOR_INDEX_READY
+    if _VECTOR_INDEX_READY:
+        return _VECTOR_INDEX
+    _VECTOR_INDEX_READY = True
+    if os.getenv("VECTOR_BACKEND", "auto").strip().lower() == "none":
+        return None
+    try:
+        _VECTOR_INDEX = ChromaVectorIndex()
+        print(f"[vector] using Chroma at {CHROMA_DIR}")
+    except ImportError:
+        print("[vector] chromadb not installed (pip install chromadb) - using in-row embedding scan.")
+    except Exception as exc:
+        print(f"[vector] could not start Chroma ({exc}) - using in-row embedding scan.")
+    return _VECTOR_INDEX
+
+
+def _vector_score_chunks_scan(chunks: List[Dict], question_embedding: List[float]) -> Dict[str, float]:
     scores = {}
     for chunk in chunks:
         raw = chunk.get("embedding")
@@ -197,6 +274,26 @@ def vector_score_chunks(chunks: List[Dict], question_embedding: Optional[List[fl
         if similarity > 0:
             scores[chunk["id"]] = similarity
     return scores
+
+
+def vector_score_chunks(chunks: List[Dict], question_embedding: Optional[List[float]]) -> Dict[str, float]:
+    if not question_embedding:
+        return {}
+    candidate_ids = {chunk["id"] for chunk in chunks}
+    index = get_vector_index()
+    if index is not None:
+        try:
+            # `chunks` may already be a restricted subset (e.g. only chunks linked to a
+            # matched company node) - asking Chroma for only len(candidate_ids) nearest
+            # neighbors would search the WHOLE collection and could miss that specific
+            # subset entirely. query() clamps to the true collection size internally, so
+            # asking for an intentionally oversized top_k safely means "give me every
+            # vector, ranked" and filtering to candidate_ids afterward stays correct.
+            raw_scores = index.query(question_embedding, top_k=100_000)
+            return {cid: score for cid, score in raw_scores.items() if cid in candidate_ids and score > 0}
+        except Exception as exc:
+            print(f"[vector] Chroma query failed ({exc}) - falling back to in-row scan for this question.")
+    return _vector_score_chunks_scan(chunks, question_embedding)
 
 
 def reciprocal_rank_fusion(*score_maps: Dict[str, float]) -> Counter:
@@ -1055,6 +1152,13 @@ def ingest_text(store: GraphStore, source_type: str, title: str, text: str, url:
             embedded_chunks += 1
         chunk_id = store.upsert_chunk(source_type, title, chunk, url, published_at, embedding_json)
         total_chunks += 1
+        if embedding_vec:
+            vector_index = get_vector_index()
+            if vector_index is not None:
+                try:
+                    vector_index.upsert(chunk_id, embedding_vec, {"title": title, "source_type": source_type, "url": url})
+                except Exception as exc:
+                    print(f"[vector] Chroma upsert failed for a chunk ({exc}) - it stays searchable via the in-row scan.")
         source_ref = url or title
         relationships, method = extract_relationships_hybrid(chunk, source_type, title, source_ref)
         method_counts[method] += 1
@@ -1161,9 +1265,11 @@ def ollama_is_running(timeout: float = 0.35) -> bool:
 def llm_status() -> Dict:
     provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
     ollama_running = ollama_is_running()
-    ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    ollama_model = os.getenv("OLLAMA_MODEL", "phi3.5")
     openai_model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    gemini_model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     if provider == "ollama":
         enabled = ollama_running
@@ -1173,14 +1279,21 @@ def llm_status() -> Dict:
         enabled = bool(openai_key)
         active = "OpenAI Responses API" if openai_key else "OpenAI key missing"
         model = openai_model if openai_key else ""
+    elif provider == "gemini":
+        enabled = bool(gemini_key)
+        active = "Gemini" if gemini_key else "Gemini key missing"
+        model = gemini_model_name if gemini_key else ""
     else:
-        enabled = ollama_running or bool(openai_key)
+        enabled = ollama_running or bool(openai_key) or bool(gemini_key)
         if ollama_running:
             active = "Ollama"
             model = ollama_model
         elif openai_key:
             active = "OpenAI Responses API"
             model = openai_model
+        elif gemini_key:
+            active = "Gemini"
+            model = gemini_model_name
         else:
             active = "local fallback"
             model = ""
@@ -1191,6 +1304,7 @@ def llm_status() -> Dict:
         "configured_provider": provider,
         "model": model,
         "ollama_base_url": ollama_base_url(),
+        "agent_enabled": bool(gemini_key),
     }
 
 
@@ -1237,8 +1351,16 @@ You are a context-grounded financial and supply-chain Q&A assistant.
 Answer only from the supplied graph paths and evidence snippets.
 If the context does not contain the requested fact, say that the current context does not include it.
 Do not invent current financial results, stock prices, suppliers, or news.
-For useful answers, explain the answer in 2-5 concise bullets and cite evidence as [Evidence 1], [Evidence 2], etc.
-If graph paths are relevant, mention the strongest path in plain English.
+
+Output format - follow this exactly:
+- 2-5 concise bullets, each citing evidence as [Evidence 1], [Evidence 2], etc.
+- Optionally, one final line: "Strongest path: <the single most relevant graph path in plain English>"
+- Nothing else. No introduction, no summary/conclusion section, no restating the bullets in different words afterward.
+
+Write the answer exactly once. Do not draft it, then redo or rephrase it under a second heading like
+"Answer:" or "In summary:" - if you catch yourself about to repeat a point already made, stop instead.
+Do not comment on your own reasoning (e.g. "this path is more/less direct than that one") - just state
+the facts.
 """.strip()
     return instructions, prompt
 
@@ -1247,7 +1369,7 @@ def _ollama_chat_raw(instructions: str, prompt: str, timeout: float = 90) -> Tup
     if not ollama_is_running(timeout=0.8):
         return None, f"Ollama is not running at {ollama_base_url()}."
 
-    model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+    model = os.getenv("OLLAMA_MODEL", "phi3.5")
     payload = {
         "model": model,
         "stream": False,
@@ -1315,9 +1437,63 @@ def _openai_respond_raw(
         return None, f"LLM call failed: {exc}"
 
 
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def gemini_api_key() -> str:
+    return os.getenv("GEMINI_API_KEY", "").strip()
+
+
+def gemini_model() -> str:
+    return os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def _gemini_extract_text(result: Dict) -> str:
+    try:
+        parts = result["candidates"][0]["content"]["parts"]
+        return "\n".join(p["text"] for p in parts if "text" in p).strip()
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+def _gemini_request(body: Dict, model: Optional[str] = None, timeout: float = 45) -> Tuple[Optional[Dict], Optional[str]]:
+    api_key = gemini_api_key()
+    if not api_key:
+        return None, "GEMINI_API_KEY is not set."
+    url = f"{GEMINI_API_BASE}/models/{model or gemini_model()}:generateContent?key={api_key}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8")), None
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        return None, f"Gemini API error {exc.code}: {detail[:500]}"
+    except Exception as exc:
+        return None, f"Gemini call failed: {exc}"
+
+
+def _gemini_chat_raw(instructions: str, prompt: str, timeout: float = 45) -> Tuple[Optional[str], Optional[str]]:
+    body = {
+        "system_instruction": {"parts": [{"text": instructions}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+    }
+    result, error = _gemini_request(body, timeout=timeout)
+    if error:
+        return None, error
+    text = _gemini_extract_text(result)
+    if text:
+        return text, None
+    return None, "Gemini response did not contain text."
+
+
 def call_llm_raw(instructions: str, prompt: str) -> Tuple[Optional[str], Optional[str], str]:
-    """Provider-agnostic LLM call: tries Ollama then OpenAI per LLM_PROVIDER, same
-    fallback order used for answer generation. Used for both Q&A and extraction."""
+    """Provider-agnostic LLM call: tries Ollama, then OpenAI, then Gemini per LLM_PROVIDER,
+    same fallback order used for answer generation. Used for both Q&A and extraction."""
     provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
     errors = []
 
@@ -1334,6 +1510,15 @@ def call_llm_raw(instructions: str, prompt: str) -> Tuple[Optional[str], Optiona
         text, error = _openai_respond_raw(instructions, prompt, max_output_tokens=900)
         if text:
             return text, None, "openai"
+        if error:
+            errors.append(error)
+        if provider == "openai":
+            return None, "; ".join(errors), "local"
+
+    if provider in {"auto", "gemini"}:
+        text, error = _gemini_chat_raw(instructions, prompt)
+        if text:
+            return text, None, "gemini"
         if error:
             errors.append(error)
 
@@ -1386,10 +1571,38 @@ def _openai_embed_raw(texts: List[str], timeout: float = 30) -> Optional[List[Li
         return None
 
 
+def _gemini_embed_raw(texts: List[str], timeout: float = 30) -> Optional[List[List[float]]]:
+    api_key = gemini_api_key()
+    if not api_key:
+        return None
+    model = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
+    embeddings = []
+    for text in texts:
+        url = f"{GEMINI_API_BASE}/models/{model}:embedContent?key={api_key}"
+        body = {"content": {"parts": [{"text": text}]}}
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            values = result.get("embedding", {}).get("values")
+            if not values:
+                return None
+            embeddings.append(values)
+        except Exception:
+            return None
+    return embeddings
+
+
 def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
     """Same provider-fallback shape as call_llm_raw, but for embeddings: prefer Ollama, then
-    OpenAI, per LLM_PROVIDER. Returns None (not a list of zeros) when no embedding provider is
-    available, so callers can tell 'no vector signal' apart from 'this chunk embedded to zero'."""
+    OpenAI, then Gemini, per LLM_PROVIDER. Returns None (not a list of zeros) when no embedding
+    provider is available, so callers can tell 'no vector signal' apart from 'this chunk embedded
+    to zero'."""
     if not texts:
         return []
     provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
@@ -1401,6 +1614,12 @@ def embed_texts(texts: List[str]) -> Optional[List[List[float]]]:
             return None
     if provider in {"auto", "openai"}:
         result = _openai_embed_raw(texts)
+        if result:
+            return result
+        if provider == "openai":
+            return None
+    if provider in {"auto", "gemini"}:
+        result = _gemini_embed_raw(texts)
         if result:
             return result
     return None
@@ -1506,6 +1725,234 @@ def build_answer(store: GraphStore, question: str) -> Dict:
         "graph_paths": paths,
         "evidence": evidence,
         "graph": {"nodes": graph["nodes"], "edges": graph["edges"]},
+    }
+
+
+AGENT_TOOLS = [
+    {
+        "name": "search_chunks",
+        "description": (
+            "Hybrid keyword+vector search over ingested SEC filing and news text chunks already "
+            "in the local knowledge graph. Use this first to ground claims in ingested documents."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Search query or question"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "find_entity",
+        "description": "Resolve a company/entity name to a graph node, confirming it exists and returning its id.",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Entity or company name"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "expand_neighbors",
+        "description": (
+            "Walk the knowledge graph outward from an entity to find multi-hop relationships - "
+            "e.g. suppliers of suppliers, or risk events connected to a company two hops away. "
+            "Use this for questions a single chunk search can't answer because the connection "
+            "spans more than one relationship."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_name": {"type": "string", "description": "Entity/company name to expand from"},
+                "depth": {"type": "integer", "description": "Relationship hops to traverse, 1-4 (default 2)"},
+            },
+            "required": ["entity_name"],
+        },
+    },
+    {
+        "name": "list_entities",
+        "description": "List known graph entities of a given label: Company, Supplier, Product, Country, RiskEvent, or NewsArticle.",
+        "parameters": {
+            "type": "object",
+            "properties": {"label": {"type": "string", "description": "Node label to list"}},
+            "required": ["label"],
+        },
+    },
+    {
+        "name": "web_search",
+        "description": (
+            "Search the live web for recent or current news not present in the local ingested "
+            "documents. Use only when the question needs up-to-date information the graph and "
+            "chunk search don't have - e.g. 'any news this week about X'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Web search query"}},
+            "required": ["query"],
+        },
+    },
+]
+
+
+def web_search_live(query: str) -> str:
+    """Live web search via Gemini's built-in Google Search grounding tool - no separate
+    search API key needed, just the Gemini key already configured for the agent."""
+    if not query.strip():
+        return "No query provided."
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": query}]}],
+        "tools": [{"google_search": {}}],
+    }
+    result, error = _gemini_request(body, timeout=30)
+    if error:
+        return f"Web search failed: {error}"
+    text = _gemini_extract_text(result)
+    sources = []
+    try:
+        chunks = result["candidates"][0]["groundingMetadata"]["groundingChunks"]
+        for chunk in chunks:
+            web = chunk.get("web", {})
+            if web.get("uri"):
+                sources.append(f"{web.get('title', web['uri'])} - {web['uri']}")
+    except (KeyError, IndexError, TypeError):
+        pass
+    if not text:
+        return "Web search returned no results."
+    if sources:
+        text += "\n\nSources:\n" + "\n".join(f"- {s}" for s in sources[:5])
+    return text
+
+
+def find_any_entity(store: GraphStore, query: str) -> Optional[Dict]:
+    """Like store.find_company, but matches nodes of any label - a Supplier, RiskEvent,
+    Product, etc, not just Company. Needed so expand_neighbors/find_entity can start a
+    traversal from any entity, not only the companies find_company was written for."""
+    query_l = query.lower().strip()
+    for node in store.nodes():
+        node_d = dict(node) if not isinstance(node, dict) else node
+        aliases = json.loads(node_d.get("aliases") or "[]")
+        names = [node_d["name"].lower()] + [a.lower() for a in aliases]
+        if any(alias and alias in query_l for alias in names):
+            return node_d
+    return None
+
+
+def dispatch_tool(store: GraphStore, name: str, args: Dict) -> str:
+    try:
+        if name == "search_chunks":
+            chunks = store.search_chunks(args.get("query", ""), limit=5)
+            if not chunks:
+                return "No matching chunks found in the local graph."
+            return "\n".join(
+                f"- [{c['title']}] ({c['source_type']}, {c['published_at'] or 'undated'}): {c['text'][:400]}"
+                for c in chunks
+            )
+
+        if name == "find_entity":
+            row = find_any_entity(store, args.get("name", ""))
+            if not row:
+                return f"No entity found matching '{args.get('name', '')}'."
+            return f"Found: {row['name']} (id={row['id']}, label={row['label']})"
+
+        if name == "expand_neighbors":
+            entity_name = args.get("entity_name", "")
+            depth = int(args.get("depth") or 2)
+            row = find_any_entity(store, entity_name)
+            if not row:
+                return f"No entity found matching '{entity_name}'."
+            paths = store.traverse(row["id"], depth=depth, limit=25)
+            lines = []
+            for path in paths:
+                labels = [f"{edge['source_name']} -[{edge['relation']}]-> {edge['target_name']}" for edge in path]
+                if labels:
+                    lines.append(" | ".join(labels))
+            return "\n".join(lines) if lines else f"No relationships found within {depth} hops of {row['name']}."
+
+        if name == "list_entities":
+            rows = store.nodes(args.get("label") or None)
+            if not rows:
+                return f"No entities found for label '{args.get('label', '')}'."
+            return ", ".join(row["name"] for row in rows[:30])
+
+        if name == "web_search":
+            return web_search_live(args.get("query", ""))
+
+        return f"Unknown tool: {name}"
+    except Exception as exc:
+        return f"Tool '{name}' failed: {exc}"
+
+
+AGENT_INSTRUCTIONS = """
+You are an agentic supply-chain risk analyst. You have tools to search ingested filings/news,
+resolve and expand entities in a knowledge graph, and search the live web for recent news.
+
+Use tools to gather evidence before answering. Prefer search_chunks and expand_neighbors for
+questions about the ingested companies (Apple, NVIDIA, Tesla, TSMC, Foxconn, Samsung, Panasonic,
+CATL). Only use web_search when the question explicitly needs current/recent information the
+local graph won't have.
+
+If the question names multiple entities (e.g. "Apple, NVIDIA, Tesla"), you must gather evidence
+for EACH one separately - call expand_neighbors and/or search_chunks once per named entity, even
+if an early result happens to mention another named entity in passing. Do not treat a shared
+supplier or a related edge as sufficient coverage for an entity you have not directly queried.
+Only stop calling tools once every named entity has been directly covered by at least one tool
+call. Do not call the same tool with the same arguments twice.
+
+When you have enough evidence, answer in plain text (no further tool calls):
+- 2-5 concise bullets, citing which tool result each claim came from.
+- Do not invent facts not returned by a tool call.
+- If tools returned nothing relevant, say so plainly instead of guessing.
+""".strip()
+
+
+def run_agent(store: GraphStore, question: str, max_steps: int = 5) -> Dict:
+    if not gemini_api_key():
+        return {
+            "question": question,
+            "answer": None,
+            "error": "GEMINI_API_KEY is not set - the agent requires Gemini for tool calling.",
+            "trace": [],
+        }
+
+    contents = [{"role": "user", "parts": [{"text": question}]}]
+    trace = []
+
+    for _ in range(max_steps):
+        body = {
+            "system_instruction": {"parts": [{"text": AGENT_INSTRUCTIONS}]},
+            "contents": contents,
+            "tools": [{"function_declarations": AGENT_TOOLS}],
+        }
+        result, error = _gemini_request(body, timeout=45)
+        if error:
+            return {"question": question, "answer": None, "error": error, "trace": trace}
+
+        try:
+            model_parts = result["candidates"][0]["content"]["parts"]
+        except (KeyError, IndexError, TypeError):
+            return {"question": question, "answer": None, "error": "Gemini returned no candidates.", "trace": trace}
+
+        function_calls = [p["functionCall"] for p in model_parts if "functionCall" in p]
+        if not function_calls:
+            answer = _gemini_extract_text(result)
+            return {"question": question, "answer": answer or None, "error": None if answer else "Empty response.", "trace": trace}
+
+        contents.append({"role": "model", "parts": model_parts})
+
+        response_parts = []
+        for call in function_calls:
+            tool_name = call.get("name", "")
+            tool_args = call.get("args", {}) or {}
+            observation = dispatch_tool(store, tool_name, tool_args)
+            trace.append({"tool": tool_name, "args": tool_args, "result": observation[:1000]})
+            response_parts.append(
+                {"functionResponse": {"name": tool_name, "response": {"result": observation}}}
+            )
+        contents.append({"role": "user", "parts": response_parts})
+
+    return {
+        "question": question,
+        "answer": None,
+        "error": f"Agent did not finish within {max_steps} tool-call steps.",
+        "trace": trace,
     }
 
 
@@ -1661,7 +2108,7 @@ HTML_PAGE = """
     .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .status {
       display: grid;
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: 10px;
       margin-top: 14px;
     }
@@ -1720,6 +2167,7 @@ HTML_PAGE = """
         <div class="stat"><span class="muted">Chunks</span><strong id="chunks">0</strong></div>
         <div class="stat"><span class="muted">LLM</span><strong id="llm">Off</strong></div>
         <div class="stat"><span class="muted">Graph DB</span><strong id="graphBackend">SQLite</strong></div>
+        <div class="stat"><span class="muted">Vector DB</span><strong id="vectorBackend">In-row</strong></div>
       </div>
       <p class="muted">Sample companies: Apple, NVIDIA, Tesla.</p>
     </aside>
@@ -1745,6 +2193,7 @@ HTML_PAGE = """
       document.getElementById("chunks").textContent = data.chunks;
       document.getElementById("llm").textContent = data.llm_enabled ? "On" : "Off";
       document.getElementById("graphBackend").textContent = data.graph_backend === "neo4j" ? "Neo4j" : "SQLite";
+      document.getElementById("vectorBackend").textContent = data.vector_backend === "chroma" ? "Chroma" : "In-row";
     }
     async function ingest() {
       const btn = document.getElementById("ingestBtn");
@@ -1861,6 +2310,7 @@ class Handler(BaseHTTPRequestHandler):
                     "llm_provider": llm["provider"],
                     "llm_model": llm["model"],
                     "graph_backend": "neo4j" if isinstance(self.store, Neo4jGraphStore) else "sqlite",
+                    "vector_backend": "chroma" if get_vector_index() is not None else "in-row",
                 }
             )
             return
@@ -1874,6 +2324,9 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             if body.get("reset", True):
                 self.store.reset()
+                vector_index = get_vector_index()
+                if vector_index is not None:
+                    vector_index.reset()
             filings = ingest_filings(self.store)
             news = ingest_news_file(self.store)
             self._send_json({"filings": filings, "news": news})
@@ -1888,6 +2341,17 @@ class Handler(BaseHTTPRequestHandler):
                 ingest_filings(self.store)
                 ingest_news_file(self.store)
             self._send_json(build_answer(self.store, question))
+            return
+        if self.path == "/api/agent-ask":
+            body = self._read_json()
+            question = body.get("question", "").strip()
+            if not question:
+                self._send_json({"error": "question is required"}, 400)
+                return
+            if self.store.count("chunks") == 0:
+                ingest_filings(self.store)
+                ingest_news_file(self.store)
+            self._send_json(run_agent(self.store, question))
             return
         if self.path == "/api/news/refresh":
             rss_url = os.getenv("NEWS_RSS_URL", "").strip()
@@ -1959,6 +2423,9 @@ def cli() -> None:
 
     if args.ingest:
         store.reset()
+        vector_index = get_vector_index()
+        if vector_index is not None:
+            vector_index.reset()
         print(json.dumps({"filings": ingest_filings(store), "news": ingest_news_file(store)}, indent=2))
     if args.rss:
         print(json.dumps(ingest_rss(store, args.rss), indent=2))

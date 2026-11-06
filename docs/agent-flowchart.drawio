@@ -1,0 +1,170 @@
+<mxfile host="app.diagrams.net" modified="2026-09-20T00:00:00.000Z" agent="claude-code" version="24.0.0" type="device">
+  <diagram name="GraphRAG Agent Flow" id="agentFlow">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1300" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="GraphRAG Agent — Tool-Calling Reasoning Loop" style="text;html=1;align=center;verticalAlign=middle;fontSize=24;fontStyle=1;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="260" y="10" width="780" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="Gemini decides which tool to call, evaluates the result, and repeats until it has enough evidence to answer" style="text;html=1;align=center;verticalAlign=middle;fontSize=13;fontColor=#666666;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="200" y="48" width="900" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- loop background (drawn first = behind everything else) -->
+        <mxCell id="loopBg" value="AGENT REASONING LOOP  —  repeats up to 5 times" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5FF;strokeColor=#9673A6;strokeWidth=2;dashed=1;verticalAlign=top;align=left;fontSize=15;fontStyle=1;fontColor=#6c4f75;spacingLeft=16;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="250" width="1180" height="760" as="geometry" />
+        </mxCell>
+
+        <!-- Start -->
+        <mxCell id="n1" value="User Question" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="100" width="180" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Init -->
+        <mxCell id="n2" value="&lt;b&gt;Initialize Agent&lt;/b&gt;&lt;br&gt;POST /api/agent-ask starts run_agent() with the question" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="500" y="180" width="300" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Gemini reasons -->
+        <mxCell id="n3" value="&lt;b&gt;Gemini Reasons&lt;/b&gt;&lt;br&gt;Reads the question + evidence gathered so far.&lt;br&gt;Decides: answer now, or call a tool for more evidence?" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="470" y="300" width="360" height="75" as="geometry" />
+        </mxCell>
+
+        <!-- Decision -->
+        <mxCell id="n4" value="Enough&#10;evidence to&#10;answer?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;strokeWidth=2;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="410" width="180" height="95" as="geometry" />
+        </mxCell>
+
+        <!-- Call tool -->
+        <mxCell id="n5" value="&lt;b&gt;Call the Chosen Tool(s)&lt;/b&gt;&lt;br&gt;dispatch_tool() runs it and returns a text result" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="490" y="545" width="320" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- 5 tool boxes -->
+        <mxCell id="t1" value="&lt;b&gt;search_chunks&lt;/b&gt;&lt;br&gt;keyword + vector search&lt;br&gt;over ingested text" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="90" y="650" width="190" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="t2" value="&lt;b&gt;find_entity&lt;/b&gt;&lt;br&gt;resolve a name to a&lt;br&gt;graph node" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="300" y="650" width="190" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="t3" value="&lt;b&gt;expand_neighbors&lt;/b&gt;&lt;br&gt;multi-hop graph&lt;br&gt;traversal from an entity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="510" y="650" width="210" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="t4" value="&lt;b&gt;list_entities&lt;/b&gt;&lt;br&gt;list all nodes of&lt;br&gt;a given label" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="740" y="650" width="190" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="t5" value="&lt;b&gt;web_search&lt;/b&gt;&lt;br&gt;live news lookup&lt;br&gt;for recent events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="950" y="650" width="170" height="75" as="geometry" />
+        </mxCell>
+
+        <!-- data store -->
+        <mxCell id="d1" value="&lt;b&gt;GraphStore&lt;/b&gt;&lt;br&gt;SQLite / Neo4j&lt;br&gt;nodes · edges · chunks" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;fontSize=11;boundedLbl=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="790" width="260" height="85" as="geometry" />
+        </mxCell>
+
+        <!-- gemini grounding -->
+        <mxCell id="d2" value="&lt;b&gt;Gemini + Google Search&lt;/b&gt;&lt;br&gt;built-in live web&lt;br&gt;grounding tool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="940" y="790" width="190" height="75" as="geometry" />
+        </mxCell>
+
+        <!-- return result -->
+        <mxCell id="n6" value="&lt;b&gt;Result Returned to Gemini&lt;/b&gt;&lt;br&gt;appended to the conversation as the next turn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="480" y="910" width="340" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Final answer -->
+        <mxCell id="n7" value="&lt;b&gt;Final Answer&lt;/b&gt;&lt;br&gt;Cited bullets, grounded only in&lt;br&gt;what the tools actually returned" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1060" width="280" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Safety cap -->
+        <mxCell id="n8" value="&lt;b&gt;Safety Cap&lt;/b&gt;&lt;br&gt;After 5 steps with no answer,&lt;br&gt;stop and return an error" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeWidth=2;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="90" y="1060" width="280" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend" value="&lt;b&gt;LEGEND&lt;/b&gt;&lt;br&gt;&lt;font color=#6c8ebf&gt;■&lt;/font&gt; Start / End&lt;br&gt;&lt;font color=#9673a6&gt;■&lt;/font&gt; Gemini (LLM) call&lt;br&gt;&lt;font color=#d79b00&gt;■&lt;/font&gt; Decision point&lt;br&gt;&lt;font color=#666666&gt;■&lt;/font&gt; Internal processing&lt;br&gt;&lt;font color=#82b366&gt;■&lt;/font&gt; Tool execution&lt;br&gt;&lt;font color=#d6b656&gt;■&lt;/font&gt; Data store&lt;br&gt;&lt;font color=#b85450&gt;■&lt;/font&gt; Safety limit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#999999;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="940" y="1050" width="220" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- edges -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;" edge="1" parent="1" source="n1" target="n2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;" edge="1" parent="1" source="n2" target="n3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;" edge="1" parent="1" source="n3" target="n4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="No" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;fontSize=12;fontStyle=1;" edge="1" parent="1" source="n4" target="n5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="n5" target="t1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="n5" target="t2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="n5" target="t3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="n5" target="t4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="n5" target="t5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;" edge="1" parent="1" source="t1" target="d1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;" edge="1" parent="1" source="t2" target="d1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;" edge="1" parent="1" source="t3" target="d1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;" edge="1" parent="1" source="t4" target="d1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;" edge="1" parent="1" source="t5" target="d2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="d1" target="n6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;" edge="1" parent="1" source="d2" target="n6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" value="next reasoning step" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;fontSize=11;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n6" target="n3">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="110" y="937" />
+              <mxPoint x="110" y="337" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e18" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeWidth=2;fontSize=12;fontStyle=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n4" target="n7">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1190" y="457" />
+              <mxPoint x="1190" y="1092" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e19" value="after 5 steps, still &quot;No&quot;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;strokeColor=#b85450;fontColor=#b85450;fontSize=11;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="n4" target="n8">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="30" y="457" />
+              <mxPoint x="30" y="1092" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
